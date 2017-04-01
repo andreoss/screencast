@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+
+OUTPUT_DIR="${1:-$HOME/Screencast}"
+mkdir --parent "$OUTPUT_DIR"
+NAME="$(date --iso-8601=second)"
+temp() {
+        echo "$OUTPUT_DIR/temp-$NAME-${1}.${2}"
+}
+
+AUDIO_CODEC=(
+    -acodec libopus
+)
+VIDEO_CODEC=(
+    -vcodec libx264
+)
+
+ff() {
+    ffmpeg "$@" "${AUDIO_CODEC[@]}" -loglevel error || {
+        >/dev/stderr \
+            printf "ffmpeg %s failed: %d\n" "$*" $?
+        exit "$?"
+    }
+}
+
+record-mic() {
+    local PAREC=
+    local ARGS=()
+    if command -v pw-record >/dev/null
+    then
+        PAREC=pw-record
+    fi
+    if command -v parecord >/dev/null
+    then
+        PAREC=parecord
+    fi
+    "$PAREC" "${ARGS[@]}" "$(temp mic wav)" &
+}
+
+record-speaker() {
+    ff -f pulse -i default "$(temp speaker wav)" &
+}
+
+finish() {
+    echo "Merging result.."
+    ff \
+        -i "$(temp speaker wav)" \
+        -i "$(temp mic wav)" \
+        -filter_complex "[0][1]amerge=inputs=2,pan=stereo|FL<c0+c1|FR<c2+c3[a]" -map "[a]" \
+        "$(temp mic+audio ogg)"
+    rm "$(temp mic wav)"
+    rm "$(temp speaker wav)"
+    ff \
+        -i "$(temp mic+audio ogg)" \
+        -i "$(temp video mkv)" \
+        -c:v copy \
+        -c:a copy \
+        "$OUTPUT_DIR"/"$NAME".mkv
+    rm "$(temp mic+audio ogg)"
+    rm "$(temp video mkv)" 
+}
+
+trap finish EXIT
+
+record-speaker &
+record-mic &
+
+ff \
+        -f x11grab \
+        -i "$DISPLAY" \
+        "${VIDEO_CODEC[@]}" \
+        -b 1024k \
+        "$(temp video mkv)"
+
+wait
